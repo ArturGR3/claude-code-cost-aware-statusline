@@ -6,7 +6,7 @@ A status line for [Claude Code](https://claude.ai/code) that shows context usage
 
 ## Why
 
-Claude Code doesn't surface the numbers that affect your workflow and bill: how full your context is, whether the prompt cache is warm, or what each turn costs. This script puts all of that in one line so you can make informed decisions — when to `/compact`, when to `/clear`, and whether to wait out a cold cache or just send.
+Claude Code shows basic session info, but not the numbers that drive your costs: cache hit rate, idle time vs cache TTL, and per-turn spend. This script surfaces all of that so you know when a message will be cheap and when it won't.
 
 ## What you see
 
