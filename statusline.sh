@@ -159,7 +159,7 @@ if [ "$UNITS" != "cost" ] && [ -n "$RL5_PCT" ]; then
   else                         RL5_COLOR="$GREEN"
   fi
   usage_part=$(printf "${DIM}5h${RESET} ${RL5_COLOR}%s%%${RESET}" "$rl5")
-  [ -n "$rl5_eta" ] && usage_part="${usage_part}$(printf " ${DIM}↻%s${RESET}" "$rl5_eta")"
+  [ -n "$rl5_eta" ] && usage_part="${usage_part}$(printf " ${DIM}→%s${RESET}" "$rl5_eta")"
 
   # The weekly window only earns space once it is the binding constraint.
   wk="$rl7"; wk_label="wk"
@@ -217,11 +217,11 @@ line="${line}${SEP}${cache_part}"
 hint=""
 
 if [ -n "$rl5" ] && [ "$rl5" -ge 85 ]; then
-  hint="⚠ 5h window ${rl5}% used${rl5_eta:+ - resets in $rl5_eta}"
+  hint="⚠ 5h window ${rl5}% used${rl5_eta:+, resets in $rl5_eta}"
 fi
 
 if [ -z "$hint" ] && [ -n "$wk" ] && [ "$wk" -ge 85 ]; then
-  hint="⚠ Weekly window ${wk}% used${rl7_eta:+ - resets in $rl7_eta}"
+  hint="⚠ Weekly window ${wk}% used${rl7_eta:+, resets in $rl7_eta}"
 fi
 
 if [ -z "$hint" ] && [ -n "$pct" ]; then

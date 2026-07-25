@@ -22,7 +22,7 @@ the line by color and only look at digits when something isn't green.
 On a subscription:
 
 ```
-[Opus 5 med] · main · ctx 24% · cache 97% · 30s · 5h 68% ↻1h20m
+[Opus 5 med] · main · ctx 24% · cache 97% · 30s · 5h 68% →1h20m
 ```
 
 On API billing:
@@ -38,7 +38,7 @@ On API billing:
 | `ctx 24%` | Context window fill - green <50%, yellow 50-80%, red 80%+ |
 | `cache 97%` | Prompt cache hit rate this turn - green >10%, red ≤10% |
 | `30s` | Time since your last turn, colored against the detected cache TTL |
-| `5h 68% ↻1h20m` | Share of the 5-hour usage window spent, and when it resets |
+| `5h 68% →1h20m` | Share of the 5-hour usage window spent, and when it resets |
 | `wk 74%` | Weekly window - appears only when it is the binding constraint |
 | `$0.394 (+$0.0310)` | Session cost + last turn's delta - yellow >$0.50, red >$2.00 |
 
@@ -87,3 +87,6 @@ chmod +x ~/.claude/statusline.sh
 
 Requires `bash`, `jq`, `awk`, and `git`. Per-session state lives in
 `~/.cache/claude-statusline/` and is pruned after 7 days.
+
+`python3 tools/screenshot.py` regenerates the image above from the script's real
+output, so it cannot drift from what the status line actually prints.
