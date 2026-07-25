@@ -87,6 +87,3 @@ chmod +x ~/.claude/statusline.sh
 
 Requires `bash`, `jq`, `awk`, and `git`. Per-session state lives in
 `~/.cache/claude-statusline/` and is pruned after 7 days.
-
-`python3 tools/screenshot.py` regenerates the image above from the script's real
-output, so it cannot drift from what the status line actually prints.
