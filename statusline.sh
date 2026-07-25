@@ -58,22 +58,14 @@ DIM='\033[90m'
 RESET='\033[0m'
 SEP="${DIM} · ${RESET}"
 
-# One character whose height is the value: ▁ (low) through █ (full).
-GLYPHS=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
-glyph_for() { # $1 = percent
-  local idx=$(( ($1 * 8 + 99) / 100 ))   # round up, so 1% still shows a mark
-  [ "$idx" -lt 1 ] && idx=1
-  [ "$idx" -gt 8 ] && idx=8
-  printf '%s' "${GLYPHS[$((idx - 1))]}"
-}
-
 fmt_eta() { # $1 = seconds -> "6d9h" / "1h20m" / "42m"
   local s=$1 d h m
   [ "$s" -lt 0 ] && s=0
   d=$(( s / 86400 )); h=$(( (s % 86400) / 3600 )); m=$(( (s % 3600) / 60 ))
   if   [ "$d" -gt 0 ]; then printf '%dd%dh' "$d" "$h"
   elif [ "$h" -gt 0 ]; then printf '%dh%02dm' "$h" "$m"
-  else                      printf '%dm' "$m"
+  elif [ "$m" -gt 0 ]; then printf '%dm' "$m"
+  else                      printf '<1m'
   fi
 }
 
@@ -103,7 +95,7 @@ if [ -n "$PCT_RAW" ]; then
   elif [ "$pct" -ge 50 ]; then CTX_COLOR="$YELLOW"
   else                         CTX_COLOR="$GREEN"
   fi
-  ctx_part=$(printf "${DIM}ctx${RESET} ${CTX_COLOR}%s %s%%${RESET}" "$(glyph_for "$pct")" "$pct")
+  ctx_part=$(printf "${DIM}ctx${RESET} ${CTX_COLOR}%s%%${RESET}" "$pct")
 fi
 
 # --- Cache hit rate for the current turn ---
@@ -158,7 +150,7 @@ if [ "$UNITS" != "cost" ] && [ -n "$RL5_PCT" ]; then
   elif [ "$rl5" -ge 60 ]; then RL5_COLOR="$YELLOW"
   else                         RL5_COLOR="$GREEN"
   fi
-  usage_part=$(printf "${DIM}5h${RESET} ${RL5_COLOR}%s %s%%${RESET}" "$(glyph_for "$rl5")" "$rl5")
+  usage_part=$(printf "${DIM}5h${RESET} ${RL5_COLOR}%s%%${RESET}" "$rl5")
   [ -n "$rl5_eta" ] && usage_part="${usage_part}$(printf " ${DIM}↻%s${RESET}" "$rl5_eta")"
 
   # The weekly window only earns space once it is the binding constraint.
@@ -169,7 +161,7 @@ if [ "$UNITS" != "cost" ] && [ -n "$RL5_PCT" ]; then
     elif [ "$wk" -ge 60 ]; then WK_COLOR="$YELLOW"
     else                        WK_COLOR="$GREEN"
     fi
-    usage_part="${usage_part}${SEP}$(printf "${DIM}%s${RESET} ${WK_COLOR}%s %s%%${RESET}" "$wk_label" "$(glyph_for "$wk")" "$wk")"
+    usage_part="${usage_part}${SEP}$(printf "${DIM}%s${RESET} ${WK_COLOR}%s%%${RESET}" "$wk_label" "$wk")"
   fi
 fi
 

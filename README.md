@@ -22,28 +22,25 @@ the line by color and only look at digits when something isn't green.
 On a subscription:
 
 ```
-[Opus 5] · main · ctx ▂ 24% · cache 97% · 30s · 5h ▅ 68% ↻1h20m
+[Opus 5] · main · ctx 24% · cache 97% · 30s · 5h 68% ↻1h20m
 ```
 
 On API billing:
 
 ```
-[Opus 5] · main · ctx ▂ 24% · cache 97% · 30s · $0.394 (+$0.0310)
+[Opus 5] · main · ctx 24% · cache 97% · 30s · $0.394 (+$0.0310)
 ```
 
 | Field | What it means |
 |-------|---------------|
 | `[Opus 5]` | Active model |
 | `main` | Git branch (hidden outside repos) |
-| `ctx ▂ 24%` | Context window fill - green <50%, yellow 50-80%, red 80%+ |
+| `ctx 24%` | Context window fill - green <50%, yellow 50-80%, red 80%+ |
 | `cache 97%` | Prompt cache hit rate this turn - green >10%, red ≤10% |
 | `30s` | Time since your last turn, colored against the detected cache TTL |
-| `5h ▅ 68% ↻1h20m` | Share of the 5-hour usage window spent, and when it resets |
-| `wk ▆ 74%` | Weekly window - appears only when it is the binding constraint |
+| `5h 68% ↻1h20m` | Share of the 5-hour usage window spent, and when it resets |
+| `wk 74%` | Weekly window - appears only when it is the binding constraint |
 | `$0.394 (+$0.0310)` | Session cost + last turn's delta - yellow >$0.50, red >$2.00 |
-
-The `▁▂▃▄▅▆▇█` glyph is a one-character meter whose height is the value, so a
-low number can never look like a full bar.
 
 A second line appears when something needs attention: usage window nearly spent,
 context pressure, a mid-session cache rebuild, a cold cache, or first-turn warmup.
