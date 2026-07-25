@@ -22,18 +22,18 @@ the line by color and only look at digits when something isn't green.
 On a subscription:
 
 ```
-[Opus 5] · main · ctx 24% · cache 97% · 30s · 5h 68% ↻1h20m
+[Opus 5 med] · main · ctx 24% · cache 97% · 30s · 5h 68% ↻1h20m
 ```
 
 On API billing:
 
 ```
-[Opus 5] · main · ctx 24% · cache 97% · 30s · $0.394 (+$0.0310)
+[Opus 5 med] · main · ctx 24% · cache 97% · 30s · $0.394 (+$0.0310)
 ```
 
 | Field | What it means |
 |-------|---------------|
-| `[Opus 5]` | Active model |
+| `[Opus 5 med]` | Active model and effort level (`low`/`med`/`high`/`xhi`/`max`) |
 | `main` | Git branch (hidden outside repos) |
 | `ctx 24%` | Context window fill - green <50%, yellow 50-80%, red 80%+ |
 | `cache 97%` | Prompt cache hit rate this turn - green >10%, red ≤10% |

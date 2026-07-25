@@ -29,6 +29,7 @@ find "$STATE_DIR" -type f -mtime +7 -delete 2>/dev/null
   read -r RL7_PCT
   read -r RL7_RESET
   read -r RL7_OPUS_PCT
+  read -r EFFORT
 } < <(echo "$input" | jq -r '
   [ (.model.display_name // .model.id // "unknown"),
     (.session_id // "nosession"),
@@ -44,10 +45,17 @@ find "$STATE_DIR" -type f -mtime +7 -delete 2>/dev/null
     (.rate_limits.five_hour.resets_at // ""),
     (.rate_limits.seven_day.used_percentage // ""),
     (.rate_limits.seven_day.resets_at // ""),
-    (.rate_limits.seven_day_opus.used_percentage // "")
+    (.rate_limits.seven_day_opus.used_percentage // ""),
+    (.effort.level // "")
   ] | .[] | tostring')
 
 MODEL=${MODEL_RAW#Claude }
+# low | medium | high | xhigh | max, shortened to keep the bracket narrow.
+case "$EFFORT" in
+  medium) EFFORT_SHORT="med" ;;
+  xhigh)  EFFORT_SHORT="xhi" ;;
+  *)      EFFORT_SHORT="$EFFORT" ;;
+esac
 branch=$(git -C "$CWD" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
 
 # --- ANSI: labels and separators stay dim so only the numbers carry color ---
@@ -195,7 +203,9 @@ PREV_SEEN=$(cat "$COST_FILE" 2>/dev/null || echo "0")
 [ "$COST" != "$PREV_SEEN" ] && printf '%s' "$COST" > "$COST_FILE"
 
 # --- Line 1 ---
-line="${DIM}[${RESET}${MODEL}${DIM}]${RESET}"
+line="${DIM}[${RESET}${MODEL}"
+[ -n "$EFFORT_SHORT" ] && line="${line}${DIM} ${EFFORT_SHORT}${RESET}"
+line="${line}${DIM}]${RESET}"
 [ -n "$branch" ]     && line="${line}${SEP}${DIM}${branch}${RESET}"
 [ -n "$ctx_part" ]   && line="${line}${SEP}${ctx_part}"
 line="${line}${SEP}${cache_part}"
