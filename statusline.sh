@@ -1,179 +1,248 @@
 #!/bin/bash
+# Status line for Claude Code: context fill, cache health, idle time, and either
+# plan usage (subscription) or dollars (API billing).
+#
+# Reads the status line JSON on stdin, prints one line, plus a second line when
+# something needs attention.
+
 input=$(cat)
 
-# --- Model: strip "Claude " prefix for brevity, e.g. "Claude Opus 4.6" -> "Opus 4.6" ---
-MODEL_RAW=$(echo "$input" | jq -r '.model.display_name // .model.id // "unknown"')
-MODEL=$(echo "$MODEL_RAW" | sed 's/^Claude //')
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
+mkdir -p "$STATE_DIR" 2>/dev/null
+# /clear starts a new session_id, so per-session state accumulates forever.
+find "$STATE_DIR" -type f -mtime +7 -delete 2>/dev/null
 
-SESSION_ID=$(echo "$input" | jq -r '.session_id')
-CWD=$(echo "$input" | jq -r '.workspace.current_dir')
+# --- Every field we need, in one jq pass (line-based: values may contain spaces)
+{
+  read -r MODEL_RAW
+  read -r SESSION_ID
+  read -r CWD
+  read -r TRANSCRIPT
+  read -r PCT_RAW
+  read -r TOTAL_INPUT
+  read -r R
+  read -r C
+  read -r I
+  read -r COST
+  read -r RL5_PCT
+  read -r RL5_RESET
+  read -r RL7_PCT
+  read -r RL7_RESET
+  read -r RL7_OPUS_PCT
+} < <(echo "$input" | jq -r '
+  [ (.model.display_name // .model.id // "unknown"),
+    (.session_id // "nosession"),
+    (.workspace.current_dir // "."),
+    (.transcript_path // ""),
+    (.context_window.used_percentage // ""),
+    (.context_window.total_input_tokens // 0),
+    (.context_window.current_usage.cache_read_input_tokens // 0),
+    (.context_window.current_usage.cache_creation_input_tokens // 0),
+    (.context_window.current_usage.input_tokens // 0),
+    (.cost.total_cost_usd // 0),
+    (.rate_limits.five_hour.used_percentage // ""),
+    (.rate_limits.five_hour.resets_at // ""),
+    (.rate_limits.seven_day.used_percentage // ""),
+    (.rate_limits.seven_day.resets_at // ""),
+    (.rate_limits.seven_day_opus.used_percentage // "")
+  ] | .[] | tostring')
 
+MODEL=${MODEL_RAW#Claude }
 branch=$(git -C "$CWD" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
 
-# --- ANSI colors ---
+# --- ANSI: labels and separators stay dim so only the numbers carry color ---
 GREEN='\033[32m'
 YELLOW='\033[33m'
 RED='\033[31m'
+DIM='\033[90m'
 RESET='\033[0m'
+SEP="${DIM} · ${RESET}"
 
-# --- Context fill bar ---
-PCT=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+# One character whose height is the value: ▁ (low) through █ (full).
+GLYPHS=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+glyph_for() { # $1 = percent
+  local idx=$(( ($1 * 8 + 99) / 100 ))   # round up, so 1% still shows a mark
+  [ "$idx" -lt 1 ] && idx=1
+  [ "$idx" -gt 8 ] && idx=8
+  printf '%s' "${GLYPHS[$((idx - 1))]}"
+}
+
+fmt_eta() { # $1 = seconds -> "6d9h" / "1h20m" / "42m"
+  local s=$1 d h m
+  [ "$s" -lt 0 ] && s=0
+  d=$(( s / 86400 )); h=$(( (s % 86400) / 3600 )); m=$(( (s % 3600) / 60 ))
+  if   [ "$d" -gt 0 ]; then printf '%dd%dh' "$d" "$h"
+  elif [ "$h" -gt 0 ]; then printf '%dh%02dm' "$h" "$m"
+  else                      printf '%dm' "$m"
+  fi
+}
+
+# --- Cache TTL: not in the payload, but the transcript records which bucket
+# each cache write landed in, so read it from what actually happened. ---
+TTL="5m"
+if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+  detected=$(tail -n 400 "$TRANSCRIPT" 2>/dev/null | sed 1d | jq -r '
+    (.message.usage.cache_creation // empty)
+    | if   (.ephemeral_1h_input_tokens // 0) > 0 then "1h"
+      elif (.ephemeral_5m_input_tokens // 0) > 0 then "5m"
+      else empty end' 2>/dev/null | tail -1)
+  [ -n "$detected" ] && TTL="$detected"
+fi
+if [ "$TTL" = "1h" ]; then
+  TTL_WARN=1800; TTL_COLD=3600
+else
+  TTL_WARN=180;  TTL_COLD=300
+fi
+
+# --- Context fill ---
 ctx_part=""
 pct=""
-if [ -n "$PCT" ]; then
-  pct=$(printf "%.0f" "$PCT")
-  filled=$(( pct * 8 / 100 ))
-  bar=""; i=0
-  while [ $i -lt $filled ]; do bar="${bar}█"; i=$(( i + 1 )); done
-  while [ $i -lt 8 ];        do bar="${bar}░"; i=$(( i + 1 )); done
+if [ -n "$PCT_RAW" ]; then
+  pct=$(printf "%.0f" "$PCT_RAW")
   if   [ "$pct" -ge 80 ]; then CTX_COLOR="$RED"
   elif [ "$pct" -ge 50 ]; then CTX_COLOR="$YELLOW"
   else                         CTX_COLOR="$GREEN"
   fi
-  ctx_part=$(printf "ctx [${CTX_COLOR}%s${RESET}] ${CTX_COLOR}%s%%${RESET}" "$bar" "$pct")
+  ctx_part=$(printf "${DIM}ctx${RESET} ${CTX_COLOR}%s %s%%${RESET}" "$(glyph_for "$pct")" "$pct")
 fi
 
-# --- Cache numbers (current turn) ---
-read -r R C I < <(echo "$input" | jq -r '
-  .context_window.current_usage as $u
-  | "\($u.cache_read_input_tokens // 0) \($u.cache_creation_input_tokens // 0) \($u.input_tokens // 0)"
-')
+# --- Cache hit rate for the current turn ---
 TOTAL=$(( R + C + I ))
 Ck=$(( C / 1000 ))
-if [ $TOTAL -gt 0 ]; then
+if [ "$TOTAL" -gt 0 ]; then
   HIT=$(( R * 100 / TOTAL ))
-  if [ $HIT -le 10 ]; then
-    CACHE_COLOR="$RED"
-  else
-    CACHE_COLOR="$GREEN"
-  fi
-  cache_part=$(printf "cache ${CACHE_COLOR}%d%%${RESET}" "$HIT")
-  [ $C -gt 2000 ] && cache_part="${cache_part} [✎${Ck}k]"
+  if [ "$HIT" -le 10 ]; then CACHE_COLOR="$RED"; else CACHE_COLOR="$GREEN"; fi
+  cache_part=$(printf "${DIM}cache${RESET} ${CACHE_COLOR}%d%%${RESET}" "$HIT")
 else
   HIT=0
-  cache_part=$(printf "cache ${RED}—${RESET}")
+  cache_part=$(printf "${DIM}cache${RESET} ${RED}-${RESET}")
 fi
 
-# --- Time since last turn (read mtime BEFORE we potentially overwrite) ---
-PREV_COST_FILE="/tmp/statusline-prev-cost-${SESSION_ID}"
-ttl_part=""
+# --- Time since the last real turn (mtime of the cost marker, read before we
+# overwrite it below) ---
+COST_FILE="$STATE_DIR/cost-$SESSION_ID"
+DISPLAY_FILE="$STATE_DIR/display-$SESSION_ID"
+idle_part=""
 AGO=0
-if [ -f "$PREV_COST_FILE" ]; then
-  NOW=$(date +%s)
-  LAST=$(stat -c %Y "$PREV_COST_FILE" 2>/dev/null || stat -f %m "$PREV_COST_FILE" 2>/dev/null)
+if [ -f "$COST_FILE" ]; then
+  LAST=$(stat -f %m "$COST_FILE" 2>/dev/null || stat -c %Y "$COST_FILE" 2>/dev/null)
   if [ -n "$LAST" ]; then
-    AGO=$(( NOW - LAST ))
-    # Color coding: green < 3m (cache warm), yellow 3–5m (cache at risk), red >= 5m (cache dropped)
-    if   [ $AGO -lt 60 ];  then TTL_COLOR="$GREEN"; ttl_label="${AGO}s"
-    elif [ $AGO -lt 180 ]; then TTL_COLOR="$GREEN"; ttl_label="$(( AGO / 60 ))m"
-    elif [ $AGO -lt 300 ]; then TTL_COLOR="$YELLOW"; ttl_label="$(( AGO / 60 ))m"
-    else                        TTL_COLOR="$RED";    ttl_label="$(( AGO / 60 ))m ❄"
+    AGO=$(( $(date +%s) - LAST ))
+    if   [ "$AGO" -lt 60 ];          then IDLE_COLOR="$GREEN";  idle_label="${AGO}s"
+    elif [ "$AGO" -lt "$TTL_WARN" ]; then IDLE_COLOR="$GREEN";  idle_label="$(( AGO / 60 ))m"
+    elif [ "$AGO" -lt "$TTL_COLD" ]; then IDLE_COLOR="$YELLOW"; idle_label="$(( AGO / 60 ))m"
+    else                                  IDLE_COLOR="$RED";    idle_label="$(( AGO / 60 ))m ❄"
     fi
-    ttl_part=$(printf "${TTL_COLOR}%s${RESET}" "$ttl_label")
+    idle_part=$(printf "${IDLE_COLOR}%s${RESET}" "$idle_label")
   fi
 fi
 
-# --- Detect /clear or /compact via context drop, set CLEARED flag ---
-PREV_PCT_FILE="/tmp/statusline-prev-pct-${SESSION_ID}"
-PREV_PCT_RAW=$(cat "$PREV_PCT_FILE" 2>/dev/null || echo "0")
-echo "${PCT:-0}" > "$PREV_PCT_FILE"
-
-TOTAL_INPUT=$(echo "$input" | jq -r '.context_window.total_input_tokens // 0')
-PREV_TOKENS_FILE="/tmp/statusline-prev-tokens-${SESSION_ID}"
-PREV_TOKENS=$(cat "$PREV_TOKENS_FILE" 2>/dev/null || echo "0")
-echo "$TOTAL_INPUT" > "$PREV_TOKENS_FILE"
-
-CLEARED=0
-if [ -z "$PCT" ] && [ "$(echo "$PREV_PCT_RAW >= 0.1" | bc -l)" = "1" ]; then
-  CLEARED=1
-elif [ -n "$PCT" ] && [ "$(echo "$PREV_PCT_RAW > $PCT" | bc -l)" = "1" ]; then
-  CLEARED=1
-elif [ "$PREV_TOKENS" -gt 0 ] && [ "$TOTAL_INPUT" -eq 0 ]; then
-  CLEARED=1
+# --- Spend: plan usage on a subscription, dollars on API billing ---
+# rate_limits is present only on subscriptions, so the default needs no config.
+UNITS="${CLAUDE_STATUSLINE_UNITS:-auto}"
+if [ "$UNITS" = "auto" ]; then
+  if [ -n "$RL5_PCT" ]; then UNITS="usage"; else UNITS="cost"; fi
 fi
 
-# --- Cost: baseline-adjusted display, resets to $0 on /clear ---
-COST=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
-PREV_COST=$(cat "$PREV_COST_FILE" 2>/dev/null || echo "0")
-DELTA=$(echo "$COST $PREV_COST" | awk '{printf "%.4f", $1 - $2}')
+usage_part=""
+rl5=""; rl7=""; rl7_opus=""; rl5_eta=""; rl7_eta=""; wk=""
+if [ "$UNITS" != "cost" ] && [ -n "$RL5_PCT" ]; then
+  rl5=$(printf "%.0f" "$RL5_PCT")
+  [ -n "$RL7_PCT" ] && rl7=$(printf "%.0f" "$RL7_PCT")
+  [ -n "$RL7_OPUS_PCT" ] && rl7_opus=$(printf "%.0f" "$RL7_OPUS_PCT")
+  NOW=$(date +%s)
+  [ -n "$RL5_RESET" ] && rl5_eta=$(fmt_eta $(( RL5_RESET - NOW )))
+  [ -n "$RL7_RESET" ] && rl7_eta=$(fmt_eta $(( RL7_RESET - NOW )))
 
-BASELINE_FILE="/tmp/statusline-baseline-${SESSION_ID}"
-BASELINE=$(cat "$BASELINE_FILE" 2>/dev/null || echo "0")
+  if   [ "$rl5" -ge 85 ]; then RL5_COLOR="$RED"
+  elif [ "$rl5" -ge 60 ]; then RL5_COLOR="$YELLOW"
+  else                         RL5_COLOR="$GREEN"
+  fi
+  usage_part=$(printf "${DIM}5h${RESET} ${RL5_COLOR}%s %s%%${RESET}" "$(glyph_for "$rl5")" "$rl5")
+  [ -n "$rl5_eta" ] && usage_part="${usage_part}$(printf " ${DIM}↻%s${RESET}" "$rl5_eta")"
 
-DISPLAY_FILE="/tmp/statusline-cost-display-${SESSION_ID}"
-
-# Fallback: no context but cost grew past baseline — missed the /clear transition
-if [ "$CLEARED" = "0" ] && [ "$TOTAL_INPUT" -eq 0 ] && [ "$(echo "$COST > $BASELINE + 0.001" | bc -l)" = "1" ]; then
-  CLEARED=1
+  # The weekly window only earns space once it is the binding constraint.
+  wk="$rl7"; wk_label="wk"
+  if [ -n "$rl7_opus" ] && [ "$rl7_opus" -gt "${rl7:-0}" ]; then wk="$rl7_opus"; wk_label="wk opus"; fi
+  if [ -n "$wk" ] && { [ "$wk" -gt "$rl5" ] || [ "$wk" -ge 50 ]; }; then
+    if   [ "$wk" -ge 85 ]; then WK_COLOR="$RED"
+    elif [ "$wk" -ge 60 ]; then WK_COLOR="$YELLOW"
+    else                        WK_COLOR="$GREEN"
+    fi
+    usage_part="${usage_part}${SEP}$(printf "${DIM}%s${RESET} ${WK_COLOR}%s %s%%${RESET}" "$wk_label" "$(glyph_for "$wk")" "$wk")"
+  fi
 fi
 
-if [ "$CLEARED" = "1" ]; then
-  # /clear happened — reset baseline to current raw cost, display goes to $0
-  echo "$COST" > "$BASELINE_FILE"
-  echo "$COST" > "$PREV_COST_FILE"
-  cost_part='$0.000 (fresh)'
-  echo "$cost_part" > "$DISPLAY_FILE"
-elif [ "$COST" != "$PREV_COST" ]; then
-  # Real turn — compute display in baseline-adjusted dollars
-  ADJ_COST=$(echo "$COST $BASELINE" | awk '{printf "%.4f", $1 - $2}')
-  ADJ_PREV=$(echo "$PREV_COST $BASELINE" | awk '{printf "%.4f", $1 - $2}')
-  echo "$COST" > "$PREV_COST_FILE"
-  cost_part=$(printf '$%.3f (+$%.4f)' "$ADJ_COST" "$DELTA")
-  echo "$cost_part" > "$DISPLAY_FILE"
-else
-  # Refresh tick — frozen display
-  cost_part=$(cat "$DISPLAY_FILE" 2>/dev/null || printf '$%.3f' "$COST")
+# Dollars. total_cost_usd is not monotonic within a session (bridged and resumed
+# sessions re-zero it), so the per-turn delta is clamped at zero, never trusted.
+cost_part=""
+if [ "$UNITS" != "usage" ]; then
+  PREV_COST=$(cat "$COST_FILE" 2>/dev/null || echo "0")
+  read -r DELTA COST_TIER < <(awk -v c="$COST" -v p="$PREV_COST" 'BEGIN {
+    d = c - p; if (d < 0) d = 0
+    t = (c > 2.0 ? "red" : (c > 0.5 ? "yellow" : "green"))
+    printf "%.4f %s\n", d, t
+  }')
+  case "$COST_TIER" in
+    red)    COST_COLOR="$RED" ;;
+    yellow) COST_COLOR="$YELLOW" ;;
+    *)      COST_COLOR="$GREEN" ;;
+  esac
+  if [ "$COST" != "$PREV_COST" ]; then
+    cost_text=$(printf '$%.3f (+$%.4f)' "$COST" "$DELTA")
+    printf '%s' "$cost_text" > "$DISPLAY_FILE"
+  else
+    # Refresh tick, not a new turn: keep the last turn's numbers on screen.
+    cost_text=$(cat "$DISPLAY_FILE" 2>/dev/null || printf '$%.3f' "$COST")
+  fi
+  cost_part=$(printf "${COST_COLOR}%s${RESET}" "$cost_text")
 fi
 
-# --- Cost color: green < $0.50, yellow $0.50–$2.00, red > $2.00 ---
-ADJ_FOR_COLOR=$(echo "$COST $BASELINE" | awk '{printf "%.4f", $1 - $2}')
-if [ "$(echo "$ADJ_FOR_COLOR > 2.0" | bc -l)" = "1" ]; then
-  COST_COLOR="$RED"
-elif [ "$(echo "$ADJ_FOR_COLOR > 0.5" | bc -l)" = "1" ]; then
-  COST_COLOR="$YELLOW"
-else
-  COST_COLOR="$GREEN"
-fi
-colored_cost=$(printf "${COST_COLOR}%s${RESET}" "$cost_part")
+# The marker doubles as the idle clock, so only touch it on a real turn.
+PREV_SEEN=$(cat "$COST_FILE" 2>/dev/null || echo "0")
+[ "$COST" != "$PREV_SEEN" ] && printf '%s' "$COST" > "$COST_FILE"
 
-# --- Build line 1 ---
-parts="[$MODEL]"
-[ -n "$branch" ]   && parts="$parts | ${branch}"
-[ -n "$ctx_part" ] && parts="$parts | $ctx_part"
-parts="$parts | $cache_part"
-[ -n "$ttl_part" ] && parts="$parts | $ttl_part"
+# --- Line 1 ---
+line="${DIM}[${RESET}${MODEL}${DIM}]${RESET}"
+[ -n "$branch" ]     && line="${line}${SEP}${DIM}${branch}${RESET}"
+[ -n "$ctx_part" ]   && line="${line}${SEP}${ctx_part}"
+line="${line}${SEP}${cache_part}"
+[ -n "$idle_part" ]  && line="${line}${SEP}${idle_part}"
+[ -n "$usage_part" ] && line="${line}${SEP}${usage_part}"
+[ -n "$cost_part" ]  && line="${line}${SEP}${cost_part}"
 
-# --- Build line 2: one prioritized hint, or nothing ---
+# --- Line 2: one hint, most urgent first ---
 hint=""
 
-# 1. Context approaching auto-compact (most urgent)
-if [ -n "$pct" ]; then
+if [ -n "$rl5" ] && [ "$rl5" -ge 85 ]; then
+  hint="⚠ 5h window ${rl5}% used${rl5_eta:+ - resets in $rl5_eta}"
+fi
+
+if [ -z "$hint" ] && [ -n "$wk" ] && [ "$wk" -ge 85 ]; then
+  hint="⚠ Weekly window ${wk}% used${rl7_eta:+ - resets in $rl7_eta}"
+fi
+
+if [ -z "$hint" ] && [ -n "$pct" ]; then
   if   [ "$pct" -ge 80 ]; then
-    hint="⚠ Context ${pct}% full — run /compact or /clear soon, or you'll lose conversation detail"
+    hint="⚠ Context ${pct}% full - run /compact or /clear soon, or you'll lose conversation detail"
   elif [ "$pct" -ge 70 ]; then
-    hint="↑ Context ${pct}% full — wrap up your current task before things get auto-summarized"
+    hint="↑ Context ${pct}% full - wrap up your current task before things get auto-summarized"
   fi
 fi
 
-# 2. Cache rewrite mid-session (large write, not from idle — something changed)
-if [ -z "$hint" ] && [ "$C" -gt 5000 ] && [ "$AGO" -lt 300 ] && [ "$R" -gt 0 ]; then
-  hint="✎ Cache rebuilt this turn (${Ck}k tokens) — did you edit CLAUDE.md, switch model, or change tools?"
+if [ -z "$hint" ] && [ "$C" -gt 5000 ] && [ "$AGO" -lt "$TTL_COLD" ] && [ "$R" -gt 0 ]; then
+  hint="✎ Cache rebuilt this turn (${Ck}k tokens) - did you edit CLAUDE.md, switch model, or change tools?"
 fi
 
-# 3. Cold cache from idle
-if [ -z "$hint" ] && [ "$AGO" -ge 300 ]; then
-  hint="❄ Idle $(( AGO / 60 ))m — your next message will cost ~5× more than usual (cache went cold)"
+if [ -z "$hint" ] && [ "$AGO" -ge "$TTL_COLD" ]; then
+  hint="❄ Idle $(( AGO / 60 ))m - past the ${TTL} cache TTL, so your next message pays full input price"
 fi
 
-# 4. Warming (first turn — lots of writes, no reads yet)
 if [ -z "$hint" ] && [ "$C" -gt 5000 ] && [ "$R" -eq 0 ]; then
-  hint="○ Building cache — first turn always shows 0%, jumps to 80–90% next message"
+  hint="○ Building cache - first turn always shows 0%, jumps to 80-90% next message"
 fi
 
-# --- Emit: plain parts + colored cost, hint in default color ---
-printf "%s | ${COST_COLOR}%s${RESET}\n" "$parts" "$cost_part"
-if [ -n "$hint" ]; then
-  printf "%s\n" "$hint"
-fi
+printf "%b\n" "$line"
+[ -n "$hint" ] && printf "${DIM}%s${RESET}\n" "$hint"
 
 exit 0
